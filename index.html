@@ -353,13 +353,16 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
           <div class="sub-h">Impressora</div>
           <div class="grid">
             <div class="field">
-              <label for="f-impressora">Modelo</label>
-              <div class="control"><input id="f-impressora" data-k="impressora" placeholder="Ex.: Bambu Lab A1"></div>
+              <label for="f-impressora">Impressora</label>
+              <div class="control"><select id="f-impressora" data-k="impressora">
+                <option value="a1">Bambu Lab A1</option>
+                <option value="kobrax">Kobra X</option>
+              </select></div>
             </div>
             <div class="field">
               <label for="f-consumo">Consumo médio</label>
-              <div class="control num"><input id="f-consumo" data-k="consumo" inputmode="decimal"><span class="ad">kWh/h</span></div>
-              <p class="hint">0,11 é a referência da Bambu Lab A1. Uma tomada medidora dá o valor real.</p>
+              <div class="control num"><input id="f-consumo" data-consumo inputmode="decimal" placeholder="0"><span class="ad">kWh/h</span></div>
+              <p class="hint" id="hint-consumo"></p>
             </div>
             <div class="field">
               <label for="f-energia">Preço da energia</label>
@@ -389,9 +392,18 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
           </div>
 
           <div class="sub-h">Filamento</div>
-          <p class="hint" style="margin-top:-4px">Peso da mesa inteira. Peça multicolor: um filamento por linha, o custo soma todos.</p>
-          <div class="rows" id="fil-rows"></div>
-          <button class="btn add" type="button" data-add="filamentos">+ Filamento</button>
+          <div class="grid">
+            <div class="field">
+              <label for="f-peso">Peso total usado</label>
+              <div class="control num"><input id="f-peso" data-k="peso" inputmode="decimal" placeholder="0"><span class="ad">g</span></div>
+              <p class="hint">Da mesa inteira, somando todas as cores.</p>
+            </div>
+            <div class="field">
+              <label for="f-preco-kg">Preço do filamento</label>
+              <div class="control num"><span class="ad">R$</span><input id="f-preco-kg" data-k="precoKg" inputmode="decimal" placeholder="0"><span class="ad">/kg</span></div>
+            </div>
+            <div class="derived" id="out-material-mesa"></div>
+          </div>
 
           <div class="sub-h">Rotina da impressora</div>
           <div class="grid">
@@ -725,10 +737,11 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
   function custos(s) {
     const pecas = Math.max(1, Math.round(num(s.pecasMesa)) || 1);
     const tempo = num(s.horas) + num(s.minutos) / 60;
-    const matMesa = (s.filamentos || []).reduce((a, f) => a + num(f.peso) * num(f.precoKg) / 1000, 0);
-    const pesoMesa = (s.filamentos || []).reduce((a, f) => a + num(f.peso), 0);
+    const pesoMesa = num(s.peso);
+    const matMesa = pesoMesa * num(s.precoKg) / 1000;
     const material = matMesa / pecas;
-    const energia = num(s.consumo) * tempo * num(s.energia) / pecas;
+    const consumo = s.consumos ? num(s.consumos[s.impressora]) : num(s.consumo);
+    const energia = consumo * tempo * num(s.energia) / pecas;
     const falha = num(s.falha) / 100 * (material + energia);
     const cats = Object.fromEntries(CATS.map(c => [c, 0]));
     (s.extras || []).forEach(e => { cats[CATS.includes(e.cat) ? e.cat : 'Outros'] += qtdOf(e) * num(e.preco); });
@@ -996,7 +1009,7 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
 (function () {
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-  const KEY = 'precificador3d:estado', HKEY = 'precificador3d:historico';
+  const KEY = 'precificador3d:estado:v2', HKEY = 'precificador3d:historico';
   const store = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
   const load = k => { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : null; } catch (e) { return null; } };
   const clone = o => JSON.parse(JSON.stringify(o));
@@ -1006,9 +1019,9 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
   const EXEMPLO = {
     exemplo: true,
     nome: 'Suporte de fone de ouvido', linkModelo: '', linkConcorrente: '', precoConcorrente: '39,90',
-    impressora: 'Bambu Lab A1', consumo: '0,11', energia: '0,85',
+    impressora: 'a1', consumos: { a1: '0', kobrax: '0' }, energia: '0',
     pecasMesa: '1', horas: '3', minutos: '10', falha: '3',
-    filamentos: [{ nome: 'PLA preto', cor: '#26282c', peso: '58', precoKg: '85' }],
+    peso: '58', precoKg: '85',
     horasDia: '20', diasMes: '30',
     canal: 'tiktok',
     shopee: { conta: 'cnpj', cpf450: false, campanha: false, campanhaPct: '2,5' },
@@ -1034,7 +1047,23 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
     }
     return base;
   }
-  let S = merge(clone(EXEMPLO), load(KEY));
+  // converte cálculos salvos na versão antiga (um filamento por linha, impressora em texto)
+  function migrar(o) {
+    if (!o || typeof o !== 'object') return o;
+    if (Array.isArray(o.filamentos) && o.peso == null) {
+      o.peso = String(o.filamentos.reduce((a, f) => a + num(f.peso), 0)).replace('.', ',');
+      o.precoKg = (o.filamentos[0] || {}).precoKg || '';
+    }
+    if (o.consumo != null && !o.consumos) {
+      o.consumos = { a1: o.consumo, kobrax: '0' };
+      o.impressora = /kobra/i.test(o.impressora || '') ? 'kobrax' : 'a1';
+      if (o.impressora === 'kobrax') o.consumos = { a1: '0', kobrax: o.consumo };
+    }
+    if (o.impressora !== 'a1' && o.impressora !== 'kobrax') o.impressora = 'a1';
+    delete o.filamentos; delete o.consumo;
+    return o;
+  }
+  let S = merge(clone(EXEMPLO), migrar(load(KEY)));
   let historico = load(HKEY) || [];
 
   const getP = (o, p) => p.split('.').reduce((a, k) => a == null ? a : a[k], o);
@@ -1054,6 +1083,13 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
       const v = getP(S, el.dataset.k);
       if (el.type === 'checkbox') el.checked = !!v; else el.value = v ?? '';
     });
+    fillConsumo();
+  }
+  function fillConsumo() {
+    $('#f-consumo').value = (S.consumos && S.consumos[S.impressora]) ?? '0';
+    $('#hint-consumo').textContent = S.impressora === 'a1'
+      ? 'Referência para a Bambu Lab A1: cerca de 0,11 kWh/h. Fica salvo para cada impressora.'
+      : 'Fica salvo para cada impressora. Uma tomada medidora dá o valor real.';
   }
   function syncShow() {
     $$('[data-set]').forEach(b => b.setAttribute('aria-pressed', String(getP(S, b.dataset.set) === b.dataset.v)));
@@ -1064,19 +1100,6 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
     $('#aviso-exemplo').hidden = !S.exemplo;
   }
 
-  function renderFil() {
-    const box = $('#fil-rows');
-    if (!S.filamentos.length) { box.innerHTML = '<p class="empty-row">Nenhum filamento. Adicione um ou carregue o arquivo fatiado.</p>'; return; }
-    box.innerHTML = S.filamentos.map((f, i) => `
-      <div class="row fil">
-        <input class="a-cor" type="color" id="fil-${i}-cor" data-list="filamentos" data-i="${i}" data-f="cor" value="${esc(normCor(f.cor) || '#888888')}" aria-label="Cor do filamento ${i + 1}">
-        <div class="control a-nome"><input id="fil-${i}-nome" data-list="filamentos" data-i="${i}" data-f="nome" value="${esc(f.nome)}" placeholder="PLA, PETG, marca…" aria-label="Filamento ${i + 1}"></div>
-        <div class="control num a-peso"><input id="fil-${i}-peso" data-list="filamentos" data-i="${i}" data-f="peso" value="${esc(f.peso)}" inputmode="decimal" placeholder="0" aria-label="Peso em gramas"><span class="ad">g</span></div>
-        <div class="control num a-preco"><span class="ad">R$</span><input id="fil-${i}-preco" data-list="filamentos" data-i="${i}" data-f="precoKg" value="${esc(f.precoKg)}" inputmode="decimal" placeholder="0" aria-label="Preço por kg"><span class="ad">/kg</span></div>
-        <div class="a-custo" id="fil-${i}-custo"></div>
-        <button type="button" class="icon-btn a-del" data-del="filamentos" data-i="${i}" aria-label="Remover filamento ${i + 1}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
-      </div>`).join('');
-  }
   function renderExt() {
     const box = $('#ext-rows');
     if (!S.extras.length) { box.innerHTML = '<p class="empty-row">Nenhum extra. Use os atalhos acima para adicionar embalagem e acabamento.</p>'; return; }
@@ -1196,8 +1219,7 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
       $('#roas-acos').textContent = r ? fmtPct(r.acos) : '—';
     }
 
-    // custos de cada filamento
-    S.filamentos.forEach((f, i) => { const el = $('#fil-' + i + '-custo'); if (el) el.textContent = fmt(num(f.peso) * num(f.precoKg) / 1000); });
+    $('#out-material-mesa').innerHTML = R.C.matMesa > 0 ? `Filamento da mesa: <b>${fmt(R.C.matMesa)}</b>` : '';
 
     // resumos nos cabeçalhos
     const h = Math.floor(R.C.tempo), mi = Math.round((R.C.tempo - h) * 60);
@@ -1226,9 +1248,14 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
   // ---------- eventos ----------
   function onField(e) {
     const el = e.target;
-    if (el.dataset.k) {
+    if (el.hasAttribute('data-consumo')) {
+      if (!S.consumos) S.consumos = { a1: '0', kobrax: '0' };
+      S.consumos[S.impressora] = el.value;
+      changed();
+    } else if (el.dataset.k) {
       setP(S, el.dataset.k, el.type === 'checkbox' ? el.checked : el.value);
       if (el.type === 'checkbox') syncShow();
+      if (el.dataset.k === 'impressora') fillConsumo();
       changed();
     } else if (el.dataset.list) {
       const row = S[el.dataset.list][+el.dataset.i];
@@ -1243,17 +1270,9 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
     if (set) { setP(S, set.dataset.set, set.dataset.v); syncShow(); changed(); return; }
     const add = e.target.closest('[data-add]');
     if (add) {
-      const L = add.dataset.add;
-      if (L === 'filamentos') {
-        const ult = S.filamentos[S.filamentos.length - 1];
-        S.filamentos.push({ nome: '', cor: '#d4d4d4', peso: '', precoKg: ult ? ult.precoKg : '' });
-        renderFil(); changed();
-        const el = $('#fil-' + (S.filamentos.length - 1) + '-nome'); if (el) el.focus();
-      } else {
-        S.extras.push({ nome: '', qtd: '1', preco: '', cat: 'Embalagem' });
-        renderExt(); changed();
-        const el = $('#ext-' + (S.extras.length - 1) + '-nome'); if (el) el.focus();
-      }
+      S.extras.push({ nome: '', qtd: '1', preco: '', cat: 'Embalagem' });
+      renderExt(); changed();
+      const el = $('#ext-' + (S.extras.length - 1) + '-nome'); if (el) el.focus();
       return;
     }
     const chip = e.target.closest('[data-chip]');
@@ -1267,7 +1286,7 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
     const del = e.target.closest('[data-del]');
     if (del) {
       S[del.dataset.del].splice(+del.dataset.i, 1);
-      del.dataset.del === 'filamentos' ? renderFil() : renderExt();
+      renderExt();
       changed();
       return;
     }
@@ -1275,8 +1294,8 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
     if (hAbrir) {
       const h = historico.find(x => x.id === hAbrir.dataset.hAbrir);
       if (h) {
-        S = merge(clone(EXEMPLO), clone(h.estado)); S.exemplo = false;
-        fillStatic(); renderFil(); renderExt(); syncShow(); changed();
+        S = merge(clone(EXEMPLO), migrar(clone(h.estado))); S.exemplo = false;
+        fillStatic(); renderExt(); syncShow(); changed();
         toast('Cálculo aberto: ' + (h.nome || 'sem nome'));
         window.scrollTo({ top: 0, behavior: 'smooth' });
       }
@@ -1290,11 +1309,9 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
   });
 
   $('#btn-novo').addEventListener('click', () => {
-    const f0 = S.filamentos[0] || { nome: '', cor: '#d4d4d4', precoKg: '' };
-    Object.assign(S, { exemplo: false, nome: '', linkModelo: '', linkConcorrente: '', precoConcorrente: '', horas: '', minutos: '', pecasMesa: '1' });
-    S.filamentos = [{ nome: f0.nome, cor: f0.cor, peso: '', precoKg: f0.precoKg }];
+    Object.assign(S, { exemplo: false, nome: '', linkModelo: '', linkConcorrente: '', precoConcorrente: '', horas: '', minutos: '', pecasMesa: '1', peso: '' });
     $('#import-msg').hidden = true;
-    fillStatic(); renderFil(); renderExt(); syncShow(); changed();
+    fillStatic(); renderExt(); syncShow(); changed();
     toast('Novo cálculo. Impressora, canal e extras foram mantidos.');
     const n = $('#f-nome'); if (n) n.focus();
   });
@@ -1397,21 +1414,14 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
         partes.push(`${S.horas}h${S.minutos.padStart(2, '0')}`);
       }
       if (temPeso) {
-        const ant = S.filamentos;
-        const lista = r.pesos.map((p, i) => ({ p, tipo: r.tipos && r.tipos[i], cor: r.cores && r.cores[i] })).filter(x => x.p > 0.005);
-        S.filamentos = lista.map((x, i) => ({
-          nome: x.tipo || (ant[i] && ant[i].nome) || 'Filamento',
-          cor: normCor(x.cor) || (ant[i] && ant[i].cor) || '#888888',
-          peso: fmtN(x.p, 2),
-          precoKg: (ant[i] || ant[0] || {}).precoKg || ''
-        }));
-        const tot = lista.reduce((a, x) => a + x.p, 0);
-        partes.push(`${fmtN(tot, 1)} g${lista.length > 1 ? ` em ${lista.length} filamentos` : ''}${r.estimado ? ' (estimado pelo comprimento)' : ''}`);
+        const tot = r.pesos.filter(x => x > 0).reduce((a, x) => a + x, 0);
+        S.peso = fmtN(tot, 2);
+        partes.push(`${fmtN(tot, 1)} g de filamento${r.estimado ? ' (estimado pelo comprimento)' : ''}`);
       }
       if (r.placas > 1) partes.push(`placa ${r.placa} de ${r.placas}`);
-      fillStatic(); renderFil(); changed();
+      fillStatic(); changed();
       msg.className = 'import-msg ok';
-      msg.textContent = `Lido de ${file.name}: ${partes.join(', ')}. Confira o preço por kg de cada filamento.`;
+      msg.textContent = `Lido de ${file.name}: ${partes.join(', ')}.`;
     } catch (err) {
       msg.className = 'import-msg err';
       msg.textContent = err.message || 'Não consegui ler esse arquivo.';
@@ -1429,8 +1439,7 @@ input[type="color"]::-moz-color-swatch{border:0;border-radius:5px}
     new IntersectionObserver(es => es.forEach(en => $('#mobile-bar').classList.toggle('away', en.isIntersecting)), { threshold: 0.05 }).observe($('.price-card'));
   }
 
-  window.normCor = normCor;
-  fillStatic(); renderFil(); renderExt(); syncShow(); renderHist(); render();
+  fillStatic(); renderExt(); syncShow(); renderHist(); render();
 })();
 </script>
 </body>
